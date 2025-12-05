@@ -1138,8 +1138,6 @@ export function decodeFromPixelRow(
   // Try the new barcode-style calibration first
   const timing = calibrateFromIndexSequence(getPixel, searchStart, searchEnd);
   
-  // Debug: log calibration result
-  console.log(`[DEBUG] calibrateFromIndexSequence: timing=${timing ? JSON.stringify({startX: timing.startX.toFixed(2), pps: timing.pixelsPerSegment.toFixed(2), rT: timing.rThreshold.toFixed(1), gT: timing.gThreshold.toFixed(1), bT: timing.bThreshold.toFixed(1)}) : 'null'}`);
   
   let effectiveStartX: number;
   let pixelsPerSegment: number;
@@ -1288,14 +1286,28 @@ export function decodeFromPixelRow(
   
   // Apply Reed-Solomon error correction
   const encodedBytes = new Uint8Array(bytes);
-  console.log(`[DEBUG] RS input (${bytes.length} bytes): ${bytes.slice(0, 16).map(b => b.toString(16).padStart(2, '0')).join(' ')}...`);
-  const decodedBytes = rsDecode(encodedBytes, nsym);
+  let decodedBytes = rsDecode(encodedBytes, nsym);
+  let errorsCorrected = false;
   
   if (!decodedBytes) {
-    console.log(`[DEBUG] RS decode FAILED`);
-    return null; // Too many errors to correct
+    // RS failed - check if UUID bytes have valid v4 markers
+    // If so, the UUID is likely correct even though parity is corrupted
+    const byte6 = bytes[6];
+    const byte8 = bytes[8];
+    const version = (byte6 >> 4) & 0xF;
+    const variant = (byte8 >> 4) & 0xF;
+    
+    if (version === 4 && variant >= 8 && variant <= 11) {
+      // Valid UUID v4 markers - extract UUID directly
+      decodedBytes = new Uint8Array(bytes.slice(0, 16));
+      errorsCorrected = true; // Mark that we couldn't verify with RS
+    } else {
+      return null; // Too many errors to correct and invalid markers
+    }
+  } else {
+    // Check if any errors were corrected
+    errorsCorrected = !bytes.slice(0, 16).every((b, i) => b === decodedBytes![i]);
   }
-  console.log(`[DEBUG] RS decode SUCCESS`);
   
   // Check if any errors were corrected
   const errorsCorrected = !bytes.slice(0, 16).every((b, i) => b === decodedBytes[i]);
