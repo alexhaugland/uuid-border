@@ -6,7 +6,7 @@ import { readFileSync } from 'fs';
 import { RGB, isEncodedColor, TOTAL_SEGMENTS, MARKER_START_PATTERN, indicesToHexDigit, findEncodingByMarkers } from './src/lib/uuid-border';
 import { rsDecode, bytesToUuid, calculateParityBytes, DEFAULT_RS_CONFIG } from './src/lib/reed-solomon';
 
-const buffer = readFileSync('./90_zoom.png');
+const buffer = readFileSync('./90_zoom2.png');
 const png = PNG.sync.read(buffer);
 const { width, height, data } = png;
 

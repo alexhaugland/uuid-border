@@ -1059,6 +1059,50 @@ function decodeIndexWithCalibration(pixel: RGB, cal: TimingCalibration): number 
 }
 
 /**
+ * Multi-sample decoding: sample multiple points in a segment and vote.
+ * This is more robust against pixel-level noise from zoom interpolation.
+ * Like how real barcode readers work - they don't just sample one point.
+ */
+function decodeIndexMultiSample(
+  getPixel: (x: number) => RGB,
+  segmentStart: number,
+  segmentWidth: number,
+  cal: TimingCalibration,
+  numSamples: number = 3
+): number {
+  // Sample at 25%, 50%, 75% of segment (avoiding edges where interpolation is worst)
+  const samples: number[] = [];
+  
+  for (let i = 1; i <= numSamples; i++) {
+    const x = Math.floor(segmentStart + (i / (numSamples + 1)) * segmentWidth);
+    const pixel = getPixel(x);
+    if (pixel) {
+      samples.push(decodeIndexWithCalibration(pixel, cal));
+    }
+  }
+  
+  if (samples.length === 0) return 0;
+  
+  // Vote: count occurrences of each index
+  const votes = new Map<number, number>();
+  for (const idx of samples) {
+    votes.set(idx, (votes.get(idx) || 0) + 1);
+  }
+  
+  // Return most common index
+  let maxVotes = 0;
+  let winner = samples[0];
+  for (const [idx, count] of votes) {
+    if (count > maxVotes) {
+      maxVotes = count;
+      winner = idx;
+    }
+  }
+  
+  return winner;
+}
+
+/**
  * Decode a UUID from a row of pixels with Reed-Solomon error correction.
  * 
  * Uses barcode-style timing calibration:
@@ -1155,9 +1199,43 @@ export function decodeFromPixelRow(
   const totalBytes = 16 + nsym;
   const dataStartSegment = 14; // After start marker (6) and index (8)
   
-  // Helper to get segment center X position (handles fractional segment widths)
-  const getSegmentCenterX = (segmentIndex: number): number => {
-    return Math.floor(effectiveStartX + segmentIndex * pixelsPerSegment + pixelsPerSegment / 2);
+  // Helper to decode a segment with multi-sampling for robustness
+  // This samples multiple points and votes, rather than just the center
+  const decodeSegmentRobust = (segmentIndex: number): number => {
+    const segStart = effectiveStartX + segmentIndex * pixelsPerSegment;
+    
+    // For narrow segments, just use center
+    if (pixelsPerSegment < 3) {
+      return decodeIndex(Math.floor(segStart + pixelsPerSegment / 2));
+    }
+    
+    // Sample at 25%, 50%, 75% of segment
+    const samples: number[] = [];
+    for (const frac of [0.25, 0.5, 0.75]) {
+      const x = Math.floor(segStart + frac * pixelsPerSegment);
+      const pixel = getPixel(x);
+      if (pixel) {
+        samples.push(decodeIndex(x));
+      }
+    }
+    
+    if (samples.length === 0) return 0;
+    
+    // Vote: return most common value
+    const counts = new Map<number, number>();
+    for (const s of samples) {
+      counts.set(s, (counts.get(s) || 0) + 1);
+    }
+    
+    let best = samples[0];
+    let bestCount = 0;
+    for (const [val, count] of counts) {
+      if (count > bestCount) {
+        bestCount = count;
+        best = val;
+      }
+    }
+    return best;
   };
   
   // Read RS-encoded data (4 color segments per byte)
@@ -1168,8 +1246,7 @@ export function decodeFromPixelRow(
     // Read 4 segments: highHigh, highLow, lowHigh, lowLow
     const segments: number[] = [];
     for (let s = 0; s < 4; s++) {
-      const segmentCenterX = getSegmentCenterX(baseSegment + s);
-      segments.push(decodeIndex(segmentCenterX));
+      segments.push(decodeSegmentRobust(baseSegment + s));
     }
     
     // Convert to byte
@@ -1183,8 +1260,7 @@ export function decodeFromPixelRow(
   const endMarkerStart = dataStartSegment + totalBytes * 4;
   const endPattern: number[] = [];
   for (let i = 0; i < 6; i++) {
-    const segmentCenterX = getSegmentCenterX(endMarkerStart + i);
-    endPattern.push(decodeIndex(segmentCenterX));
+    endPattern.push(decodeSegmentRobust(endMarkerStart + i));
   }
   
   let endMatchCount = 0;
@@ -1195,11 +1271,14 @@ export function decodeFromPixelRow(
   
   // Apply Reed-Solomon error correction
   const encodedBytes = new Uint8Array(bytes);
+  console.log(`[DEBUG] RS input (${bytes.length} bytes): ${bytes.slice(0, 16).map(b => b.toString(16).padStart(2, '0')).join(' ')}...`);
   const decodedBytes = rsDecode(encodedBytes, nsym);
   
   if (!decodedBytes) {
+    console.log(`[DEBUG] RS decode FAILED`);
     return null; // Too many errors to correct
   }
+  console.log(`[DEBUG] RS decode SUCCESS`);
   
   // Check if any errors were corrected
   const errorsCorrected = !bytes.slice(0, 16).every((b, i) => b === decodedBytes[i]);

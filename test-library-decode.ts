@@ -8,7 +8,7 @@ import { RGB, decodeFromPixelRow, isEncodedColor } from './src/lib/uuid-border';
 // Patch the library to add debug output
 const originalDecodeFromPixelRow = decodeFromPixelRow;
 
-const buffer = readFileSync('./90_zoom.png');
+const buffer = readFileSync('./90_zoom2.png');
 const png = PNG.sync.read(buffer);
 const { width, height, data } = png;
 
