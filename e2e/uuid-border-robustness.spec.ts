@@ -15,12 +15,12 @@ if (!existsSync(ARTIFACTS_DIR)) {
 }
 
 /**
- * Check if a color looks like an encoded color (channels near 98 or 168)
- * More robust than gray detection for JPEG-compressed images
+ * Check if a color looks like an encoded color (channels near 121 or 145)
+ * More robust than gray detection for compressed images
  */
-function isEncodedColor(c: RGB, tolerance: number = 25): boolean {
-  const LOW = 98;
-  const HIGH = 168;
+function isEncodedColor(c: RGB, tolerance: number = 20): boolean {
+  const LOW = 121;
+  const HIGH = 145;
 
   const isLowOrHigh = (val: number) =>
     Math.abs(val - LOW) < tolerance || Math.abs(val - HIGH) < tolerance;

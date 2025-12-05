@@ -26,9 +26,9 @@ export { DEFAULT_RS_CONFIG };
 // Generate 8 distinct colors for the index (0-7)
 // Using all three channels (R, G, B) for better differentiation
 // Each bit of the index controls one channel: bit0=R, bit1=G, bit2=B
-// JPEG-robust: Using 70-unit separation (98 vs 168) to survive compression
+// Subtle appearance: 24-unit separation (121 vs 145) - visually subtle gray
 const BASE = 133;
-const OFFSET = 35; // Increased from 10 to 35 for JPEG robustness
+const OFFSET = 12; // Balanced: visible enough for decoding, subtle enough to look good
 
 function generateIndexColors(): RGB[] {
   const colors: RGB[] = [];
@@ -40,15 +40,15 @@ function generateIndexColors(): RGB[] {
     });
   }
   return colors;
-  // Results in (with OFFSET=35):
-  // 0: (98, 98, 98)   - all low
-  // 1: (168, 98, 98)  - R high
-  // 2: (98, 168, 98)  - G high
-  // 3: (168, 168, 98) - R,G high
-  // 4: (98, 98, 168)  - B high
-  // 5: (168, 98, 168) - R,B high
-  // 6: (98, 168, 168) - G,B high
-  // 7: (168, 168, 168) - all high
+  // Results in (with OFFSET=12):
+  // 0: (121, 121, 121) - all low
+  // 1: (145, 121, 121) - R high
+  // 2: (121, 145, 121) - G high
+  // 3: (145, 145, 121) - R,G high
+  // 4: (121, 121, 145) - B high
+  // 5: (145, 121, 145) - R,B high
+  // 6: (121, 145, 145) - G,B high
+  // 7: (145, 145, 145) - all high
 }
 
 export const INDEX_COLORS = generateIndexColors();
@@ -455,23 +455,10 @@ export function decodeFromPixelRow(
   const calibration = buildCalibratedIndex(indexColors);
   if (!calibration) return null;
   
-  // Verify we have sufficient color variation (lowered threshold for JPEG)
-  // With OFFSET=35, original range is 70. After heavy JPEG, can be as low as 8-10.
-  // Require at least 8 units in each channel, or at least 2 of 3 channels above 15.
-  const MIN_RANGE_HARD = 8;
-  const MIN_RANGE_SOFT = 15;
-  const channelsAboveSoft = [
-    calibration.rRange >= MIN_RANGE_SOFT,
-    calibration.gRange >= MIN_RANGE_SOFT,
-    calibration.bRange >= MIN_RANGE_SOFT,
-  ].filter(Boolean).length;
-  
-  const allAboveHard = 
-    calibration.rRange >= MIN_RANGE_HARD && 
-    calibration.gRange >= MIN_RANGE_HARD && 
-    calibration.bRange >= MIN_RANGE_HARD;
-  
-  if (!allAboveHard || channelsAboveSoft < 2) {
+  // Verify we have sufficient color variation
+  // With OFFSET=12, original range is 24. Require at least 10 units in each channel.
+  const MIN_RANGE = 10;
+  if (calibration.rRange < MIN_RANGE || calibration.gRange < MIN_RANGE || calibration.bRange < MIN_RANGE) {
     return null; // Not enough color variation - probably not the encoded border
   }
   
