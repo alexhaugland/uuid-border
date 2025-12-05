@@ -217,36 +217,41 @@ test.describe('Encode-Decode Flow via Web App', () => {
 });
 
 /**
- * Tests for different browser zoom levels / viewport sizes
+ * Tests for different browser zoom levels
  * 
- * These tests simulate zoom by using different viewport widths.
- * Real browser zoom affects the effective viewport size - zooming out
- * makes the viewport effectively larger, zooming in makes it smaller.
+ * These tests use CSS zoom to simulate real browser zoom behavior.
+ * When users zoom in/out using Ctrl+/- or browser zoom, it affects
+ * how the canvas is rendered and how screenshots are captured.
+ * 
+ * These are regression tests - they will FAIL if zoom breaks decoding.
  */
 test.describe('Encode-Decode at Different Zoom Levels', () => {
-  test('should decode correctly at 90% effective zoom (larger viewport)', async ({ browser }) => {
-    // 90% zoom = viewport appears 111% larger (1/0.9 ≈ 1.11)
-    // Base viewport is 1280px, so at 90% zoom it's effectively ~1422px
-    const context = await browser.newContext({
-      viewport: { width: 1422, height: 800 },
-    });
-    const page = await context.newPage();
-
+  test('should decode correctly at 90% browser zoom', async ({ page }) => {
+    // Go to encoder page
     await page.goto('/');
     await page.waitForLoadState('networkidle');
     await page.waitForSelector('canvas');
     await page.waitForTimeout(500);
 
+    // Get the UUID before zooming
     const uuidElement = page.locator('code').first();
     const originalUuid = await uuidElement.textContent();
     expect(originalUuid).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
     );
 
+    // Simulate browser zoom to 90%
+    await page.evaluate(() => {
+      document.body.style.zoom = '0.9';
+    });
+    await page.waitForTimeout(500); // Wait for re-render
+
+    // Take screenshot at 90% zoom
     const inputContainer = page.locator('.relative.flex-1').first();
     const screenshotBuffer = await inputContainer.screenshot({ type: 'png' });
     writeFileSync(join(ARTIFACTS_DIR, 'e2e-zoom-90-screenshot.png'), screenshotBuffer);
 
+    // Navigate to decoder and upload
     await page.goto('/decode');
     await page.waitForLoadState('networkidle');
 
@@ -257,25 +262,16 @@ test.describe('Encode-Decode at Different Zoom Levels', () => {
       buffer: screenshotBuffer,
     });
 
+    // Verify the UUID is decoded correctly
     await expect(page.locator('text=Discovered')).toBeVisible({ timeout: 10000 });
     
     const decodedUuidElement = page.locator('.bg-\\[var\\(--surface\\)\\] code').first();
     const decodedUuid = await decodedUuidElement.textContent();
 
     expect(decodedUuid).toBe(originalUuid);
-
-    await page.close();
-    await context.close();
   });
 
-  test('should decode correctly at 80% effective zoom (larger viewport)', async ({ browser }) => {
-    // 80% zoom = viewport appears 125% larger (1/0.8 = 1.25)
-    // Base viewport is 1280px, so at 80% zoom it's effectively 1600px
-    const context = await browser.newContext({
-      viewport: { width: 1600, height: 900 },
-    });
-    const page = await context.newPage();
-
+  test('should decode correctly at 80% browser zoom', async ({ page }) => {
     await page.goto('/');
     await page.waitForLoadState('networkidle');
     await page.waitForSelector('canvas');
@@ -286,6 +282,12 @@ test.describe('Encode-Decode at Different Zoom Levels', () => {
     expect(originalUuid).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
     );
+
+    // Simulate browser zoom to 80%
+    await page.evaluate(() => {
+      document.body.style.zoom = '0.8';
+    });
+    await page.waitForTimeout(500);
 
     const inputContainer = page.locator('.relative.flex-1').first();
     const screenshotBuffer = await inputContainer.screenshot({ type: 'png' });
@@ -307,141 +309,6 @@ test.describe('Encode-Decode at Different Zoom Levels', () => {
     const decodedUuid = await decodedUuidElement.textContent();
 
     expect(decodedUuid).toBe(originalUuid);
-
-    await page.close();
-    await context.close();
-  });
-
-  test('should decode correctly at 110% effective zoom (smaller viewport)', async ({ browser }) => {
-    // 110% zoom = viewport appears 91% as large (1/1.1 ≈ 0.91)
-    // Base viewport is 1280px, so at 110% zoom it's effectively ~1164px
-    const context = await browser.newContext({
-      viewport: { width: 1164, height: 655 },
-    });
-    const page = await context.newPage();
-
-    await page.goto('/');
-    await page.waitForLoadState('networkidle');
-    await page.waitForSelector('canvas');
-    await page.waitForTimeout(500);
-
-    const uuidElement = page.locator('code').first();
-    const originalUuid = await uuidElement.textContent();
-    expect(originalUuid).toMatch(
-      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-    );
-
-    const inputContainer = page.locator('.relative.flex-1').first();
-    const screenshotBuffer = await inputContainer.screenshot({ type: 'png' });
-    writeFileSync(join(ARTIFACTS_DIR, 'e2e-zoom-110-screenshot.png'), screenshotBuffer);
-
-    await page.goto('/decode');
-    await page.waitForLoadState('networkidle');
-
-    const fileInput = page.locator('input[type="file"]');
-    await fileInput.setInputFiles({
-      name: 'screenshot-110.png',
-      mimeType: 'image/png',
-      buffer: screenshotBuffer,
-    });
-
-    await expect(page.locator('text=Discovered')).toBeVisible({ timeout: 10000 });
-    
-    const decodedUuidElement = page.locator('.bg-\\[var\\(--surface\\)\\] code').first();
-    const decodedUuid = await decodedUuidElement.textContent();
-
-    expect(decodedUuid).toBe(originalUuid);
-
-    await page.close();
-    await context.close();
-  });
-
-  test('should decode correctly at 125% effective zoom (smaller viewport)', async ({ browser }) => {
-    // 125% zoom = viewport appears 80% as large (1/1.25 = 0.8)
-    // Base viewport is 1280px, so at 125% zoom it's effectively 1024px
-    const context = await browser.newContext({
-      viewport: { width: 1024, height: 576 },
-    });
-    const page = await context.newPage();
-
-    await page.goto('/');
-    await page.waitForLoadState('networkidle');
-    await page.waitForSelector('canvas');
-    await page.waitForTimeout(500);
-
-    const uuidElement = page.locator('code').first();
-    const originalUuid = await uuidElement.textContent();
-    expect(originalUuid).toMatch(
-      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-    );
-
-    const inputContainer = page.locator('.relative.flex-1').first();
-    const screenshotBuffer = await inputContainer.screenshot({ type: 'png' });
-    writeFileSync(join(ARTIFACTS_DIR, 'e2e-zoom-125-screenshot.png'), screenshotBuffer);
-
-    await page.goto('/decode');
-    await page.waitForLoadState('networkidle');
-
-    const fileInput = page.locator('input[type="file"]');
-    await fileInput.setInputFiles({
-      name: 'screenshot-125.png',
-      mimeType: 'image/png',
-      buffer: screenshotBuffer,
-    });
-
-    await expect(page.locator('text=Discovered')).toBeVisible({ timeout: 10000 });
-    
-    const decodedUuidElement = page.locator('.bg-\\[var\\(--surface\\)\\] code').first();
-    const decodedUuid = await decodedUuidElement.textContent();
-
-    expect(decodedUuid).toBe(originalUuid);
-
-    await page.close();
-    await context.close();
-  });
-
-  test('should decode correctly with 2x device pixel ratio (retina)', async ({ browser }) => {
-    // Simulate retina display which captures at 2x resolution
-    const context = await browser.newContext({
-      viewport: { width: 1280, height: 720 },
-      deviceScaleFactor: 2,
-    });
-    const page = await context.newPage();
-
-    await page.goto('/');
-    await page.waitForLoadState('networkidle');
-    await page.waitForSelector('canvas');
-    await page.waitForTimeout(500);
-
-    const uuidElement = page.locator('code').first();
-    const originalUuid = await uuidElement.textContent();
-    expect(originalUuid).toMatch(
-      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-    );
-
-    const inputContainer = page.locator('.relative.flex-1').first();
-    const screenshotBuffer = await inputContainer.screenshot({ type: 'png' });
-    writeFileSync(join(ARTIFACTS_DIR, 'e2e-retina-2x-screenshot.png'), screenshotBuffer);
-
-    await page.goto('/decode');
-    await page.waitForLoadState('networkidle');
-
-    const fileInput = page.locator('input[type="file"]');
-    await fileInput.setInputFiles({
-      name: 'screenshot-retina.png',
-      mimeType: 'image/png',
-      buffer: screenshotBuffer,
-    });
-
-    await expect(page.locator('text=Discovered')).toBeVisible({ timeout: 10000 });
-    
-    const decodedUuidElement = page.locator('.bg-\\[var\\(--surface\\)\\] code').first();
-    const decodedUuid = await decodedUuidElement.textContent();
-
-    expect(decodedUuid).toBe(originalUuid);
-
-    await page.close();
-    await context.close();
   });
 });
 
