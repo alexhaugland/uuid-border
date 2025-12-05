@@ -1199,43 +1199,60 @@ export function decodeFromPixelRow(
   const totalBytes = 16 + nsym;
   const dataStartSegment = 14; // After start marker (6) and index (8)
   
-  // Helper to decode a segment with multi-sampling for robustness
-  // This samples multiple points and votes, rather than just the center
-  const decodeSegmentRobust = (segmentIndex: number): number => {
+  // Get the thresholds (from timing calibration or default)
+  const rThreshold = timing?.rThreshold ?? 133;
+  const gThreshold = timing?.gThreshold ?? 133;
+  const bThreshold = timing?.bThreshold ?? 133;
+  
+  /**
+   * SOFT-DECISION DECODING
+   * 
+   * Instead of making hard binary decisions per-pixel, we:
+   * 1. Sample multiple pixels across the segment
+   * 2. Average their RGB values in floating-point space
+   * 3. Make one binary decision on the averaged values
+   * 
+   * This is more robust because pixel-level noise from zoom interpolation
+   * gets averaged out before we make the final decision.
+   */
+  const decodeSegmentSoft = (segmentIndex: number): number => {
     const segStart = effectiveStartX + segmentIndex * pixelsPerSegment;
+    const segEnd = segStart + pixelsPerSegment;
     
-    // For narrow segments, just use center
-    if (pixelsPerSegment < 3) {
-      return decodeIndex(Math.floor(segStart + pixelsPerSegment / 2));
-    }
+    // Sample multiple points across the segment (avoiding edges)
+    // More samples = better noise rejection, but diminishing returns
+    const numSamples = Math.max(3, Math.min(7, Math.floor(pixelsPerSegment)));
     
-    // Sample at 25%, 50%, 75% of segment
-    const samples: number[] = [];
-    for (const frac of [0.25, 0.5, 0.75]) {
+    let rSum = 0, gSum = 0, bSum = 0;
+    let validSamples = 0;
+    
+    for (let i = 1; i <= numSamples; i++) {
+      // Sample at evenly spaced points, avoiding the very edges
+      const frac = i / (numSamples + 1);
       const x = Math.floor(segStart + frac * pixelsPerSegment);
       const pixel = getPixel(x);
+      
       if (pixel) {
-        samples.push(decodeIndex(x));
+        rSum += pixel.r;
+        gSum += pixel.g;
+        bSum += pixel.b;
+        validSamples++;
       }
     }
     
-    if (samples.length === 0) return 0;
+    if (validSamples === 0) return 0;
     
-    // Vote: return most common value
-    const counts = new Map<number, number>();
-    for (const s of samples) {
-      counts.set(s, (counts.get(s) || 0) + 1);
-    }
+    // Compute average RGB (floating point)
+    const rAvg = rSum / validSamples;
+    const gAvg = gSum / validSamples;
+    const bAvg = bSum / validSamples;
     
-    let best = samples[0];
-    let bestCount = 0;
-    for (const [val, count] of counts) {
-      if (count > bestCount) {
-        bestCount = count;
-        best = val;
-      }
-    }
-    return best;
+    // Make ONE binary decision on the averaged values
+    const rBit = rAvg > rThreshold ? 1 : 0;
+    const gBit = gAvg > gThreshold ? 1 : 0;
+    const bBit = bAvg > bThreshold ? 1 : 0;
+    
+    return rBit | (gBit << 1) | (bBit << 2);
   };
   
   // Read RS-encoded data (4 color segments per byte)
@@ -1243,10 +1260,10 @@ export function decodeFromPixelRow(
   for (let byteIdx = 0; byteIdx < totalBytes; byteIdx++) {
     const baseSegment = dataStartSegment + byteIdx * 4;
     
-    // Read 4 segments: highHigh, highLow, lowHigh, lowLow
+    // Read 4 segments using soft-decision decoding
     const segments: number[] = [];
     for (let s = 0; s < 4; s++) {
-      segments.push(decodeSegmentRobust(baseSegment + s));
+      segments.push(decodeSegmentSoft(baseSegment + s));
     }
     
     // Convert to byte
@@ -1260,7 +1277,7 @@ export function decodeFromPixelRow(
   const endMarkerStart = dataStartSegment + totalBytes * 4;
   const endPattern: number[] = [];
   for (let i = 0; i < 6; i++) {
-    endPattern.push(decodeSegmentRobust(endMarkerStart + i));
+    endPattern.push(decodeSegmentSoft(endMarkerStart + i));
   }
   
   let endMatchCount = 0;
