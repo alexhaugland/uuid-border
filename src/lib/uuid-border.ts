@@ -962,8 +962,59 @@ function findIndexSequenceFromTransitions(
 }
 
 /**
+ * Find the end marker pattern [2,1,0,1] in the transitions.
+ * The end marker is [2,1,0,1,1,1] which appears as transitions 2→1, 1→0, 0→1.
+ * The three final 1s merge into a single run, so we look for the 2→1→0→1 pattern.
+ * 
+ * Returns the position where the end marker starts (where index 2 begins).
+ */
+function findEndMarkerFromTransitions(
+  transitions: Array<{ x: number; fromIdx: number; toIdx: number }>,
+  afterIndexPosition: number
+): number | null {
+  // Search backwards from the end, looking for the pattern:
+  // Transition sequence: 2→1, 1→0, 0→1 (the last three 1s merge into one run)
+  // This represents: [2][1][0][1,1,1]
+  
+  for (let i = transitions.length - 1; i >= 2; i--) {
+    // Look for the 0→1 transition (end of the [0] segment, start of [1,1,1])
+    if (transitions[i].fromIdx === 0 && transitions[i].toIdx === 1) {
+      // Check the preceding transitions for 1→0 and 2→1
+      if (i >= 2 &&
+          transitions[i - 1].fromIdx === 1 && transitions[i - 1].toIdx === 0 &&
+          transitions[i - 2].fromIdx === 2 && transitions[i - 2].toIdx === 1) {
+        // Found it! 
+        // End marker structure: [2][1][0][1,1,1] = 6 segments
+        // transitions[i-2].x = start of [1] (after [2]) = segment 143 of 148 total
+        // transitions[i-1].x = start of [0] (after [1]) = segment 144
+        // transitions[i].x = start of [1,1,1] (after [0]) = segment 145
+        
+        // Calculate segment width from the known gaps
+        const gap1 = transitions[i - 1].x - transitions[i - 2].x; // [1] segment width
+        const gap2 = transitions[i].x - transitions[i - 1].x;     // [0] segment width
+        const avgSegmentWidth = (gap1 + gap2) / 2;
+        
+        // The [2] segment starts one segment before the 2→1 transition
+        const startOf2 = transitions[i - 2].x - avgSegmentWidth;
+        
+        // Make sure this is after the index sequence
+        if (startOf2 > afterIndexPosition) {
+          return startOf2;
+        }
+      }
+    }
+  }
+  
+  return null;
+}
+
+/**
  * Calibrate timing using the index sequence as a reference pattern.
  * This is similar to how QR codes use timing patterns to determine module size.
+ * 
+ * Enhanced with dual-anchor calibration: uses both the index sequence at the start
+ * and the end marker to calculate a more accurate segment width. This compensates
+ * for accumulated drift over the length of the encoding.
  * 
  * @param getPixel - Pixel getter function
  * @param searchStart - Start of search region  
@@ -989,11 +1040,28 @@ function calibrateFromIndexSequence(
     return null;
   }
   
-  // Step 3: Calculate segment width from the measured positions
-  // We have 8 positions for indices 0-7, spanning 7 segments
-  // Use total span / 7 for average segment width (more accurate than median)
-  const totalSpan = indexPositions[7] - indexPositions[0];
-  const pixelsPerSegment = totalSpan / 7;
+  // Step 3: Calculate segment width
+  // First, calculate from index sequence alone (7 segments between 8 positions)
+  const indexSpan = indexPositions[7] - indexPositions[0];
+  let pixelsPerSegment = indexSpan / 7;
+  
+  // Step 3b: Try to find the end marker for dual-anchor calibration
+  // The index sequence starts at segment 6, the end marker starts at segment 142
+  // Total structure: [start:6][index:8][data:128][end:6] = 148 segments
+  const endMarkerPosition = findEndMarkerFromTransitions(transitions, indexPositions[7]);
+  
+  if (endMarkerPosition !== null) {
+    // End marker found! Use dual-anchor calibration for more accuracy.
+    // Index 0 is at segment 6, end marker [2] is at segment 142
+    // Span from segment 6 to segment 142 = 136 segments
+    const dualSpan = endMarkerPosition - indexPositions[0];
+    const dualPixelsPerSegment = dualSpan / 136;
+    
+    // Use the dual-anchor value if it's reasonable
+    if (dualPixelsPerSegment >= 2 && dualPixelsPerSegment <= 20) {
+      pixelsPerSegment = dualPixelsPerSegment;
+    }
+  }
   
   // Sanity check: segment width should be reasonable (2-20 pixels)
   if (pixelsPerSegment < 2 || pixelsPerSegment > 20) {
@@ -1012,7 +1080,7 @@ function calibrateFromIndexSequence(
   for (let i = 0; i < 8; i++) {
     // Use the measured position for this index, centered
     const segStart = indexPositions[i];
-    const segEnd = i < 7 ? indexPositions[i + 1] : segStart + pixelsPerSegment;
+    const segEnd = i < 7 ? indexPositions[i + 1] : segStart + (indexSpan / 7);
     const centerX = Math.floor((segStart + segEnd) / 2);
     indexColors.push(getPixel(centerX));
   }
@@ -1062,7 +1130,10 @@ function decodeIndexWithCalibration(pixel: RGB, cal: TimingCalibration): number 
  * Multi-sample decoding: sample multiple points in a segment and vote.
  * This is more robust against pixel-level noise from zoom interpolation.
  * Like how real barcode readers work - they don't just sample one point.
+ * 
+ * @internal Kept for reference; superseded by decodeSegmentSoft which uses averaging
  */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function decodeIndexMultiSample(
   getPixel: (x: number) => RGB,
   segmentStart: number,
@@ -1186,8 +1257,6 @@ export function decodeFromPixelRow(
     if (startPattern[i] === MARKER_START_PATTERN[i]) startMatchCount++;
   }
   
-  console.log(`[DEBUG] Start marker: [${startPattern.join(',')}] matches=${startMatchCount}/6`);
-  
   // Require at least 3 of 6 to match (more lenient for zoom-damaged images)
   // RS error correction will handle remaining errors
   if (startMatchCount < 3) return null;
@@ -1215,7 +1284,6 @@ export function decodeFromPixelRow(
    */
   const decodeSegmentSoft = (segmentIndex: number): number => {
     const segStart = effectiveStartX + segmentIndex * pixelsPerSegment;
-    const segEnd = segStart + pixelsPerSegment;
     
     // Sample multiple points across the segment (avoiding edges)
     // More samples = better noise rejection, but diminishing returns
@@ -1308,9 +1376,6 @@ export function decodeFromPixelRow(
     // Check if any errors were corrected
     errorsCorrected = !bytes.slice(0, 16).every((b, i) => b === decodedBytes![i]);
   }
-  
-  // Check if any errors were corrected
-  const errorsCorrected = !bytes.slice(0, 16).every((b, i) => b === decodedBytes[i]);
   
   // Convert decoded bytes to UUID
   const uuid = bytesToUuid(decodedBytes);
