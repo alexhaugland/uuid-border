@@ -280,6 +280,109 @@ export function sampleSegmentColor(
 }
 
 /**
+ * Check if a color looks like an encoded color (channels near 121 or 145)
+ */
+export function isEncodedColor(c: RGB, tolerance: number = 15): boolean {
+  const LOW = 121;
+  const HIGH = 145;
+  
+  const isLowOrHigh = (val: number) =>
+    Math.abs(val - LOW) < tolerance || Math.abs(val - HIGH) < tolerance;
+  
+  return isLowOrHigh(c.r) && isLowOrHigh(c.g) && isLowOrHigh(c.b);
+}
+
+/**
+ * Find the start of encoded data by scanning for the start marker pattern.
+ * This is more principled than guessing offsets - we look for the actual
+ * marker sequence [1,1,1,0,1,2] which has a distinctive color pattern.
+ * 
+ * Returns the x position where the encoding starts, or -1 if not found.
+ */
+export function findEncodingStart(
+  getPixel: (x: number) => RGB,
+  searchStart: number,
+  searchEnd: number,
+  estimatedSegmentWidth: number
+): { startX: number; segmentWidth: number } | null {
+  // The start marker is [1,1,1,0,1,2]
+  // Index 0 = (121,121,121) - all low
+  // Index 1 = (145,121,121) - R high
+  // Index 2 = (121,145,121) - G high
+  // 
+  // So the pattern is: R-high, R-high, R-high, all-low, R-high, G-high
+  // The key distinguishing feature is: three R-high in a row, then all-low
+  
+  const minSegWidth = Math.max(1, Math.floor(estimatedSegmentWidth * 0.7));
+  const maxSegWidth = Math.ceil(estimatedSegmentWidth * 1.3);
+  
+  // Scan through possible starting positions
+  for (let startX = searchStart; startX < searchEnd - TOTAL_SEGMENTS * minSegWidth; startX++) {
+    // Try different segment widths at this position
+    for (let segWidth = minSegWidth; segWidth <= maxSegWidth; segWidth++) {
+      // Check if this looks like the start marker
+      const colors: RGB[] = [];
+      for (let i = 0; i < 6; i++) {
+        const x = startX + i * segWidth + Math.floor(segWidth / 2);
+        if (x >= searchEnd) break;
+        colors.push(getPixel(x));
+      }
+      
+      if (colors.length < 6) continue;
+      
+      // Check if all colors look like encoded colors
+      if (!colors.every(c => isEncodedColor(c))) continue;
+      
+      // Build quick calibration from these 6 colors
+      // Marker uses indices [1,1,1,0,1,2] which gives us samples of indices 0,1,2
+      // Index 1 (R-high): positions 0,1,2,4
+      // Index 0 (all-low): position 3
+      // Index 2 (G-high): position 5
+      
+      // Get R values for index 1 vs index 0
+      const rHigh = (colors[0].r + colors[1].r + colors[2].r + colors[4].r) / 4;
+      const rLow = colors[3].r;
+      const rThreshold = (rHigh + rLow) / 2;
+      const rRange = rHigh - rLow;
+      
+      // Get G values for index 2 vs others
+      const gHigh = colors[5].g;
+      const gLow = (colors[0].g + colors[1].g + colors[2].g + colors[3].g + colors[4].g) / 5;
+      const gThreshold = (gHigh + gLow) / 2;
+      const gRange = gHigh - gLow;
+      
+      // Need sufficient range to be confident
+      if (rRange < 10 || gRange < 10) continue;
+      
+      // Now verify the pattern matches [1,1,1,0,1,2]
+      const decodeIndex = (c: RGB): number => {
+        const rBit = c.r > rThreshold ? 1 : 0;
+        const gBit = c.g > gThreshold ? 1 : 0;
+        // For B, we don't have good samples in the marker, assume threshold is middle
+        const bThreshold = (121 + 145) / 2;
+        const bBit = c.b > bThreshold ? 1 : 0;
+        return rBit | (gBit << 1) | (bBit << 2);
+      };
+      
+      const decoded = colors.map(decodeIndex);
+      
+      // Check if it matches [1,1,1,0,1,2]
+      // Allow some tolerance - require at least 5 of 6 to match
+      let matches = 0;
+      for (let i = 0; i < 6; i++) {
+        if (decoded[i] === MARKER_START_PATTERN[i]) matches++;
+      }
+      
+      if (matches >= 5) {
+        return { startX, segmentWidth: segWidth };
+      }
+    }
+  }
+  
+  return null;
+}
+
+/**
  * Generate a random UUID v4
  */
 export function generateUuid(): string {

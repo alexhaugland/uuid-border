@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useState, useCallback, useRef } from 'react';
-import { RGB, TOTAL_SEGMENTS, decodeFromPixelRow } from '@/lib/uuid-border';
+import { RGB, TOTAL_SEGMENTS, decodeFromPixelRow, findEncodingStart, isEncodedColor } from '@/lib/uuid-border';
 
 export default function DecodePage() {
   const [image, setImage] = useState<string | null>(null);
@@ -100,17 +100,17 @@ export default function DecodePage() {
       for (let x = 0; x < width - 100; x++) {
         const pixel = getPixel(x, y);
         
-        // Look for border-like pixels
-        if (!isBorderColor(pixel)) continue;
+        // Look for border-like pixels (either general gray or encoded colors)
+        if (!isBorderColor(pixel) && !isEncodedColor(pixel)) continue;
 
         // Find the extent of this border region
         let borderEnd = x;
-        while (borderEnd < width && isBorderColor(getPixel(borderEnd, y))) {
+        while (borderEnd < width && (isBorderColor(getPixel(borderEnd, y)) || isEncodedColor(getPixel(borderEnd, y)))) {
           borderEnd++;
         }
         const borderWidth = borderEnd - x;
         
-        // Need enough width for all segments (at least 84 pixels)
+        // Need enough width for all segments (at least 148 pixels)
         if (borderWidth < TOTAL_SEGMENTS) {
           x = borderEnd;
           continue;
@@ -118,48 +118,79 @@ export default function DecodePage() {
 
         candidatesFound++;
 
-        // Try different starting positions and widths
-        // The detected border region may include padding from rounded corners
-        // or anti-aliased edges that need to be skipped
-        const possibleEncodedWidths = [
-          borderWidth,
-          Math.floor(borderWidth * 0.98),
-          Math.floor(borderWidth * 0.96),
-          Math.floor(borderWidth * 0.95),
-          Math.floor(borderWidth * 0.93),
-          Math.floor(borderWidth * 0.90),
-          Math.floor(borderWidth * 0.85),
-        ].filter(w => w >= TOTAL_SEGMENTS);
+        // Estimate segment width based on border width
+        const estimatedSegmentWidth = borderWidth / TOTAL_SEGMENTS;
 
-        // Include smaller offsets for rounded corner components where
-        // the actual encoding may start a few pixels into the detected border
-        const possibleOffsets = [0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 15, 20, 25, 30];
+        // Use principled approach: find the start marker to locate exact encoding start
+        const encodingLocation = findEncodingStart(
+          (px) => getPixel(px, y),
+          x,
+          borderEnd,
+          estimatedSegmentWidth
+        );
 
         let foundDecode = false;
-        for (const encodedWidth of possibleEncodedWidths) {
-          if (foundDecode) break;
-          for (const offset of possibleOffsets) {
-            if (foundDecode) break;
+
+        if (encodingLocation) {
+          // We found the start marker - try to decode from there
+          const { startX, segmentWidth } = encodingLocation;
+          const encodedWidth = segmentWidth * TOTAL_SEGMENTS;
+          
+          const result = decodeFromPixelRow(
+            (px) => getPixel(px, y),
+            startX,
+            encodedWidth
+          );
+
+          if (result) {
+            if (debugLines.length < 3) {
+              debugLines.push(`Found at y=${y}, x=${startX}, w=${encodedWidth} (marker-aligned)${result.endMarkerMatch ? '' : ' (end marker mismatch)'}`);
+            }
             
-            const startX = x + offset;
-            if (startX + encodedWidth > width) continue;
+            if (!found.includes(result.uuid)) {
+              found.push(result.uuid);
+              processedRows.add(y);
+            }
+            foundDecode = true;
+          }
+        }
 
-            const result = decodeFromPixelRow(
-              (px) => getPixel(px, y),
-              startX,
-              encodedWidth
-            );
+        // Fallback: if marker detection failed, try the offset-based approach
+        if (!foundDecode) {
+          const possibleEncodedWidths = [
+            borderWidth,
+            Math.floor(borderWidth * 0.98),
+            Math.floor(borderWidth * 0.95),
+            Math.floor(borderWidth * 0.90),
+          ].filter(w => w >= TOTAL_SEGMENTS);
 
-            if (result) {
-              if (debugLines.length < 3) {
-                debugLines.push(`Found at y=${y}, x=${startX}, w=${encodedWidth}${result.endMarkerMatch ? '' : ' (end marker mismatch)'}`);
-              }
+          const possibleOffsets = [0, 2, 4, 6, 8];
+
+          for (const encodedWidth of possibleEncodedWidths) {
+            if (foundDecode) break;
+            for (const offset of possibleOffsets) {
+              if (foundDecode) break;
               
-              if (!found.includes(result.uuid)) {
-                found.push(result.uuid);
-                processedRows.add(y);
+              const startX = x + offset;
+              if (startX + encodedWidth > width) continue;
+
+              const result = decodeFromPixelRow(
+                (px) => getPixel(px, y),
+                startX,
+                encodedWidth
+              );
+
+              if (result) {
+                if (debugLines.length < 3) {
+                  debugLines.push(`Found at y=${y}, x=${startX}, w=${encodedWidth} (fallback)${result.endMarkerMatch ? '' : ' (end marker mismatch)'}`);
+                }
+                
+                if (!found.includes(result.uuid)) {
+                  found.push(result.uuid);
+                  processedRows.add(y);
+                }
+                foundDecode = true;
               }
-              foundDecode = true;
             }
           }
         }
