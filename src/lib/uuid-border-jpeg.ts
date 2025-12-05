@@ -408,7 +408,7 @@ export function decodeUuid(
   }
   
   // Deinterleave if needed
-  let encodedBytes = new Uint8Array(bytes);
+  let encodedBytes: Uint8Array = new Uint8Array(bytes);
   if (config.useInterleaving) {
     encodedBytes = deinterleaveBytes(encodedBytes, config.interleaveStride);
   }
