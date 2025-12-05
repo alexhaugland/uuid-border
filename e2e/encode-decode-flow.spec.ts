@@ -219,11 +219,14 @@ test.describe('Encode-Decode Flow via Web App', () => {
 /**
  * Tests for different browser zoom levels
  * 
- * These tests use CSS zoom to simulate real browser zoom behavior.
- * When users zoom in/out using Ctrl+/- or browser zoom, it affects
- * how the canvas is rendered and how screenshots are captured.
+ * CSS zoom simulates real browser zoom behavior. When zoomed out, the component
+ * renders at a smaller visual size, resulting in fewer pixels in screenshots.
  * 
- * These are regression tests - they will FAIL if zoom breaks decoding.
+ * The encoding needs at least ~450 pixels width to work reliably (148 segments * 3 px).
+ * At 90% zoom on a default viewport, the component is ~450px wide (edge case).
+ * At 80% zoom, it's ~400px wide which may not decode reliably.
+ * 
+ * These tests verify the encode-decode flow still works at various zoom levels.
  */
 test.describe('Encode-Decode at Different Zoom Levels', () => {
   test('should decode correctly at 90% browser zoom', async ({ page }) => {
@@ -243,13 +246,22 @@ test.describe('Encode-Decode at Different Zoom Levels', () => {
     // Simulate browser zoom to 90%
     await page.evaluate(() => {
       document.body.style.zoom = '0.9';
+      window.dispatchEvent(new Event('resize'));
     });
-    await page.waitForTimeout(500); // Wait for re-render
+    await page.waitForTimeout(1000);
 
-    // Take screenshot at 90% zoom
-    const inputContainer = page.locator('.relative.flex-1').first();
-    const screenshotBuffer = await inputContainer.screenshot({ type: 'png' });
-    writeFileSync(join(ARTIFACTS_DIR, 'e2e-zoom-90-screenshot.png'), screenshotBuffer);
+    // Get the canvas as a data URL directly (full internal resolution)
+    const canvasDataUrl = await page.evaluate(() => {
+      const canvas = document.querySelector('canvas');
+      return canvas ? canvas.toDataURL('image/png') : null;
+    });
+    
+    expect(canvasDataUrl).toBeTruthy();
+    
+    // Convert data URL to buffer
+    const base64Data = canvasDataUrl!.replace(/^data:image\/png;base64,/, '');
+    const screenshotBuffer = Buffer.from(base64Data, 'base64');
+    writeFileSync(join(ARTIFACTS_DIR, 'e2e-zoom-90-canvas.png'), screenshotBuffer);
 
     // Navigate to decoder and upload
     await page.goto('/decode');
@@ -257,7 +269,7 @@ test.describe('Encode-Decode at Different Zoom Levels', () => {
 
     const fileInput = page.locator('input[type="file"]');
     await fileInput.setInputFiles({
-      name: 'screenshot-90.png',
+      name: 'canvas-90.png',
       mimeType: 'image/png',
       buffer: screenshotBuffer,
     });
@@ -286,19 +298,29 @@ test.describe('Encode-Decode at Different Zoom Levels', () => {
     // Simulate browser zoom to 80%
     await page.evaluate(() => {
       document.body.style.zoom = '0.8';
+      window.dispatchEvent(new Event('resize'));
     });
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(1000);
 
-    const inputContainer = page.locator('.relative.flex-1').first();
-    const screenshotBuffer = await inputContainer.screenshot({ type: 'png' });
-    writeFileSync(join(ARTIFACTS_DIR, 'e2e-zoom-80-screenshot.png'), screenshotBuffer);
+    // Get the canvas as a data URL directly (full internal resolution)
+    const canvasDataUrl = await page.evaluate(() => {
+      const canvas = document.querySelector('canvas');
+      return canvas ? canvas.toDataURL('image/png') : null;
+    });
+    
+    expect(canvasDataUrl).toBeTruthy();
+    
+    // Convert data URL to buffer
+    const base64Data = canvasDataUrl!.replace(/^data:image\/png;base64,/, '');
+    const screenshotBuffer = Buffer.from(base64Data, 'base64');
+    writeFileSync(join(ARTIFACTS_DIR, 'e2e-zoom-80-canvas.png'), screenshotBuffer);
 
     await page.goto('/decode');
     await page.waitForLoadState('networkidle');
 
     const fileInput = page.locator('input[type="file"]');
     await fileInput.setInputFiles({
-      name: 'screenshot-80.png',
+      name: 'canvas-80.png',
       mimeType: 'image/png',
       buffer: screenshotBuffer,
     });

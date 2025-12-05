@@ -119,15 +119,21 @@ export default function DecodePage() {
         candidatesFound++;
 
         // Try different starting positions and widths
-        // The detected border region may include padding
+        // The detected border region may include padding from rounded corners
+        // or anti-aliased edges that need to be skipped
         const possibleEncodedWidths = [
           borderWidth,
+          Math.floor(borderWidth * 0.98),
+          Math.floor(borderWidth * 0.96),
           Math.floor(borderWidth * 0.95),
+          Math.floor(borderWidth * 0.93),
           Math.floor(borderWidth * 0.90),
           Math.floor(borderWidth * 0.85),
         ].filter(w => w >= TOTAL_SEGMENTS);
 
-        const possibleOffsets = [0, 5, 10, 15, 20, 25, 30];
+        // Include smaller offsets for rounded corner components where
+        // the actual encoding may start a few pixels into the detected border
+        const possibleOffsets = [0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 15, 20, 25, 30];
 
         let foundDecode = false;
         for (const encodedWidth of possibleEncodedWidths) {
