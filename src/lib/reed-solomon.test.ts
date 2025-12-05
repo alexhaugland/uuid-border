@@ -10,7 +10,6 @@ import {
   uuidToBytes,
   bytesToUuid,
   calculateParityBytes,
-  DEFAULT_RS_CONFIG,
 } from './reed-solomon';
 
 describe('Reed-Solomon encoding', () => {

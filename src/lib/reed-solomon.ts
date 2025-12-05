@@ -4,13 +4,12 @@
 
 /**
  * Galois Field GF(2^8) with primitive polynomial 0x11d
- * Polynomials use high-to-low coefficient order: [a_n, a_{n-1}, ..., a_1, a_0]
- * representing a_n*x^n + a_{n-1}*x^{n-1} + ... + a_1*x + a_0
  */
 
 const gfExp: number[] = new Array(512);
 const gfLog: number[] = new Array(256);
 
+// Initialize GF tables
 (function initTables() {
   let x = 1;
   for (let i = 0; i < 255; i++) {
@@ -24,15 +23,15 @@ const gfLog: number[] = new Array(256);
   }
 })();
 
-function gfMul(a: number, b: number): number {
-  if (a === 0 || b === 0) return 0;
-  return gfExp[gfLog[a] + gfLog[b]];
+function gfMul(x: number, y: number): number {
+  if (x === 0 || y === 0) return 0;
+  return gfExp[gfLog[x] + gfLog[y]];
 }
 
-function gfDiv(a: number, b: number): number {
-  if (b === 0) throw new Error('Division by zero');
-  if (a === 0) return 0;
-  return gfExp[(gfLog[a] + 255 - gfLog[b]) % 255];
+function gfDiv(x: number, y: number): number {
+  if (y === 0) throw new Error('Division by zero');
+  if (x === 0) return 0;
+  return gfExp[(gfLog[x] + 255 - gfLog[y]) % 255];
 }
 
 function gfPow(x: number, power: number): number {
@@ -45,7 +44,7 @@ function gfInverse(x: number): number {
   return gfExp[255 - gfLog[x]];
 }
 
-// Polynomial evaluation using Horner's method (high-to-low order)
+/** Polynomial evaluation using Horner's method (high-to-low order) */
 function polyEval(p: number[], x: number): number {
   let y = p[0];
   for (let i = 1; i < p.length; i++) {
@@ -54,7 +53,7 @@ function polyEval(p: number[], x: number): number {
   return y;
 }
 
-// Polynomial multiplication (high-to-low order)
+/** Polynomial multiplication (high-to-low order) */
 function polyMul(p: number[], q: number[]): number[] {
   const result = new Array(p.length + q.length - 1).fill(0);
   for (let i = 0; i < p.length; i++) {
@@ -65,7 +64,7 @@ function polyMul(p: number[], q: number[]): number[] {
   return result;
 }
 
-// Polynomial addition (high-to-low order)
+/** Polynomial addition (same-length or padded) */
 function polyAdd(p: number[], q: number[]): number[] {
   const result = new Array(Math.max(p.length, q.length)).fill(0);
   for (let i = 0; i < p.length; i++) {
@@ -77,34 +76,26 @@ function polyAdd(p: number[], q: number[]): number[] {
   return result;
 }
 
-// Scale polynomial by scalar
+/** Scale polynomial by scalar */
 function polyScale(p: number[], scale: number): number[] {
   return p.map(c => gfMul(c, scale));
 }
 
-/**
- * Generate RS generator polynomial g(x) = (x - α^0)(x - α^1)...(x - α^(nsym-1))
- * Returns in high-to-low order
- */
+/** Generate RS generator polynomial g(x) = (x - α^0)(x - α^1)...(x - α^(nsym-1)) */
 function rsGeneratorPoly(nsym: number): number[] {
   let g = [1];
   for (let i = 0; i < nsym; i++) {
-    // (x - α^i) in high-to-low = [1, α^i] since -α^i = α^i in GF(2^m)
     g = polyMul(g, [1, gfPow(2, i)]);
   }
   return g;
 }
 
-/**
- * Encode data with Reed-Solomon (systematic encoding)
- */
+/** Encode data with Reed-Solomon (systematic encoding) */
 export function rsEncode(data: Uint8Array, nsym: number): Uint8Array {
   const gen = rsGeneratorPoly(nsym);
   const result = new Uint8Array(data.length + nsym);
   result.set(data);
   
-  // Polynomial division: divide (data * x^nsym) by g(x)
-  // The remainder becomes the parity bytes
   for (let i = 0; i < data.length; i++) {
     const coef = result[i];
     if (coef !== 0) {
@@ -114,16 +105,13 @@ export function rsEncode(data: Uint8Array, nsym: number): Uint8Array {
     }
   }
   
-  // Put original data back (systematic encoding)
   result.set(data);
   return result;
 }
 
-/**
- * Calculate syndromes S_i = r(α^i) for i = 0..nsym-1
- */
+/** Calculate syndromes S_i = r(α^i) for i = 0..nsym-1 */
 function calcSyndromes(msg: number[], nsym: number): number[] {
-  const synd: number[] = [];
+  const synd: number[] = [0]; // Leading 0 for padding (like reedsolo)
   for (let i = 0; i < nsym; i++) {
     synd.push(polyEval(msg, gfPow(2, i)));
   }
@@ -132,27 +120,29 @@ function calcSyndromes(msg: number[], nsym: number): number[] {
 
 /**
  * Berlekamp-Massey algorithm to find error locator polynomial
- * Uses syndromes directly (not reversed)
- * Returns σ(x) where σ(X^(-1)) = 0 for each error location X
+ * Returns polynomial in low-to-high order: [σ_0, σ_1, ...] where σ_0 = constant term
  */
 function findErrorLocator(synd: number[], nsym: number): number[] {
-  // Error locator σ(x) - starts as [1]
-  let errLoc = [1];
-  let oldLoc = [1];
+  let errLoc = [1];  // σ(x) = 1
+  let oldLoc = [1];  // B(x) = 1
+  
+  const syndShift = synd.length > nsym ? synd.length - nsym : 0;
   
   for (let i = 0; i < nsym; i++) {
-    // Compute discrepancy
-    let delta = synd[i];
+    const K = i + syndShift;
+    
+    // Compute discrepancy Δ
+    let delta = synd[K];
     for (let j = 1; j < errLoc.length; j++) {
-      delta ^= gfMul(errLoc[errLoc.length - 1 - j], synd[i - j]);
+      // Index from end of errLoc (low-to-high means last element is highest degree)
+      delta ^= gfMul(errLoc[errLoc.length - 1 - j], synd[K - j]);
     }
     
-    // Shift oldLoc (multiply by x)
+    // Shift old_loc (multiply by x)
     oldLoc = [...oldLoc, 0];
     
     if (delta !== 0) {
       if (oldLoc.length > errLoc.length) {
-        // Need to swap
         const newLoc = polyScale(oldLoc, delta);
         oldLoc = polyScale(errLoc, gfInverse(delta));
         errLoc = newLoc;
@@ -172,15 +162,16 @@ function findErrorLocator(synd: number[], nsym: number): number[] {
 
 /**
  * Find error positions using Chien search
- * For each position i, check if σ(α^i) = 0
+ * errLoc is in low-to-high order from BM, but we need to reverse for evaluation
  */
-function findErrorPositions(errLoc: number[], msgLen: number): number[] | null {
+function findErrorPositions(errLoc: number[], nmess: number): number[] | null {
+  const errLocRev = [...errLoc].reverse(); // Convert to high-to-low for polyEval
   const numErrors = errLoc.length - 1;
   const positions: number[] = [];
   
-  for (let i = 0; i < msgLen; i++) {
-    if (polyEval(errLoc, gfPow(2, i)) === 0) {
-      positions.push(msgLen - 1 - i);
+  for (let i = 0; i < nmess; i++) {
+    if (polyEval(errLocRev, gfPow(2, i)) === 0) {
+      positions.push(nmess - 1 - i);
     }
   }
   
@@ -191,84 +182,106 @@ function findErrorPositions(errLoc: number[], msgLen: number): number[] | null {
   return positions;
 }
 
-/**
- * Calculate error evaluator polynomial Ω(x) = S(x) * σ(x) mod x^nsym
- */
-function calcOmega(synd: number[], errLoc: number[], nsym: number): number[] {
-  // S(x) in high-to-low: [S_{nsym-1}, ..., S_1, S_0]
-  const syndPoly = [...synd].reverse();
+/** Calculate error evaluator polynomial Ω(x) = S(x) * σ(x) mod x^nsym */
+function calcErrorEvaluator(synd: number[], errLoc: number[], nsym: number): number[] {
+  // synd includes leading 0 padding, so reverse synd[0:]
+  // errLoc is in low-to-high order
+  const syndRev = [...synd].reverse();  // high-to-low
+  const errLocRev = [...errLoc].reverse();  // high-to-low
   
-  // Multiply and truncate
-  let omega = polyMul(syndPoly, errLoc);
-  if (omega.length > nsym) {
-    omega = omega.slice(omega.length - nsym);
+  let omega = polyMul(syndRev, errLocRev);
+  
+  // Keep only the nsym+1 lowest degree terms (mod x^{nsym+1})
+  // In high-to-low, these are the last nsym+1 elements
+  if (omega.length > nsym + 1) {
+    omega = omega.slice(omega.length - nsym - 1);
   }
   
-  return omega;
+  // Return in low-to-high order (reversed back)
+  return omega.reverse();
 }
 
-/**
- * Forney algorithm to compute error magnitudes
+/** 
+ * Build errata locator polynomial from coefficient positions
+ * coef_pos are the polynomial degrees of the errors
  */
-function correctErrors(msg: number[], synd: number[], errLoc: number[], positions: number[]): boolean {
-  const n = msg.length;
-  const nsym = synd.length;
-  
-  // Calculate Ω(x)
-  const omega = calcOmega(synd, errLoc, nsym);
-  
-  // Calculate σ'(x) - formal derivative
-  // For σ(x) = σ_n*x^n + ... + σ_1*x + σ_0
-  // σ'(x) = n*σ_n*x^{n-1} + ... + σ_1
-  // In characteristic 2, only odd powers survive
-  const degree = errLoc.length - 1;
-  const errLocDeriv: number[] = [];
-  for (let i = 0; i < errLoc.length - 1; i++) {
-    const power = degree - i;
-    if (power % 2 === 1) {
-      errLocDeriv.push(errLoc[i]);
-    } else {
-      errLocDeriv.push(0);
+function buildErrataLocator(coefPos: number[]): number[] {
+  // σ(x) = ∏(1 - α^{coef_pos[i]} * x)
+  let errataLoc = [1];  // low-to-high: constant term 1
+  for (const cp of coefPos) {
+    // Multiply by (1 - α^cp * x) = 1 + α^cp * x (in GF(2))
+    // In low-to-high: [1, α^cp]
+    const factor = [1, gfPow(2, cp)];
+    // Convolve
+    const newLoc = new Array(errataLoc.length + 1).fill(0);
+    for (let i = 0; i < errataLoc.length; i++) {
+      for (let j = 0; j < factor.length; j++) {
+        newLoc[i + j] ^= gfMul(errataLoc[i], factor[j]);
+      }
     }
+    errataLoc = newLoc;
   }
-  // Remove leading zeros
-  while (errLocDeriv.length > 1 && errLocDeriv[0] === 0) {
-    errLocDeriv.shift();
-  }
-  if (errLocDeriv.length === 0) errLocDeriv.push(0);
+  return errataLoc;
+}
+
+/** Forney algorithm to compute error magnitudes and correct errors */
+function correctErrors(msg: number[], synd: number[], errLoc: number[], positions: number[]): boolean {
+  const nmess = msg.length;
+  const nsym = synd.length - 1;
   
-  // Correct each error using Forney formula
-  for (const pos of positions) {
-    // X = α^(n-1-pos) is the error locator value
-    const X = gfPow(2, n - 1 - pos);
-    const XInv = gfInverse(X);
+  // Convert error positions to coefficient degrees
+  const coefPos = positions.map(p => nmess - 1 - p);
+  
+  // Build errata locator from positions (more reliable than using BM output directly)
+  const errataLoc = buildErrataLocator(coefPos);
+  
+  // Calculate error evaluator polynomial Ω(x)
+  const omega = calcErrorEvaluator(synd, errataLoc, nsym);
+  const omegaRev = [...omega].reverse();  // high-to-low for polyEval
+  
+  // Calculate X values: X[i] = α^{coef_pos[i]}
+  const X = coefPos.map(cp => gfPow(2, cp));
+  
+  // Apply Forney algorithm for each error
+  for (let i = 0; i < positions.length; i++) {
+    const Xi = X[i];
+    const XiInv = gfInverse(Xi);
     
-    // e = X * Ω(X^{-1}) / σ'(X^{-1})
-    const omegaVal = polyEval(omega, XInv);
-    const derivVal = polyEval(errLocDeriv, XInv);
+    // Compute denominator: ∏(1 - X_j * X_i^{-1}) for j ≠ i
+    let errLocPrime = 1;
+    for (let j = 0; j < X.length; j++) {
+      if (j !== i) {
+        const term = 1 ^ gfMul(XiInv, X[j]);  // 1 - X_j * X_i^{-1}
+        errLocPrime = gfMul(errLocPrime, term);
+      }
+    }
     
-    if (derivVal === 0) return false;
+    if (errLocPrime === 0) return false;
     
-    const magnitude = gfMul(X, gfDiv(omegaVal, derivVal));
-    msg[pos] ^= magnitude;
+    // Compute numerator: y = Ω(X_i^{-1}) * X_i^{1-fcr}
+    // With fcr=0: y = Ω(X_i^{-1}) * X_i
+    const omegaVal = polyEval(omegaRev, XiInv);
+    const y = gfMul(Xi, omegaVal);
+    
+    // Error magnitude
+    const magnitude = gfDiv(y, errLocPrime);
+    msg[positions[i]] ^= magnitude;
   }
   
   return true;
 }
 
-/**
- * Decode Reed-Solomon encoded message
- */
+/** Decode Reed-Solomon encoded message */
 export function rsDecode(msg: Uint8Array, nsym: number): Uint8Array | null {
   if (msg.length < nsym + 1) return null;
   
   const msgArr = Array.from(msg);
   
-  // Calculate syndromes
+  // Calculate syndromes (with leading 0 padding)
   const synd = calcSyndromes(msgArr, nsym);
   
   // No errors if all syndromes are zero
-  if (synd.every(s => s === 0)) {
+  if (synd.slice(1).every(s => s === 0)) {
     return new Uint8Array(msgArr.slice(0, msgArr.length - nsym));
   }
   
@@ -294,7 +307,7 @@ export function rsDecode(msg: Uint8Array, nsym: number): Uint8Array | null {
   
   // Verify correction
   const checkSynd = calcSyndromes(msgArr, nsym);
-  if (!checkSynd.every(s => s === 0)) {
+  if (!checkSynd.slice(1).every(s => s === 0)) {
     return null;
   }
   
