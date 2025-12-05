@@ -15,6 +15,28 @@ if (!existsSync(ARTIFACTS_DIR)) {
 }
 
 /**
+ * Check if a color looks like an encoded color (channels near 98 or 168)
+ * More robust than gray detection for JPEG-compressed images
+ */
+function isEncodedColor(c: RGB, tolerance: number = 25): boolean {
+  const LOW = 98;
+  const HIGH = 168;
+
+  const isLowOrHigh = (val: number) =>
+    Math.abs(val - LOW) < tolerance || Math.abs(val - HIGH) < tolerance;
+
+  return isLowOrHigh(c.r) && isLowOrHigh(c.g) && isLowOrHigh(c.b);
+}
+
+/**
+ * Check if a color looks like a border color (grayish, for fallback detection)
+ */
+function isBorderColorGray(c: RGB): boolean {
+  const avg = (c.r + c.g + c.b) / 3;
+  return avg > 80 && avg < 200 && Math.abs(c.g - c.b) < 40;
+}
+
+/**
  * Decode UUID from an image buffer (PNG format)
  */
 async function decodeUuidFromImage(
@@ -36,28 +58,35 @@ async function decodeUuidFromImage(
     };
   };
 
-  // Check if a color looks like a border color (grayish, around 123-143 range)
-  const isBorderColor = (c: RGB): boolean => {
-    const avg = (c.r + c.g + c.b) / 3;
-    return avg > 100 && avg < 180 && Math.abs(c.g - c.b) < 30;
-  };
-
   // Scan multiple rows (border might not be at y=0 due to rounded corners)
   for (let y = 0; y < Math.min(height, 10); y++) {
-    // Find the border region in this row
-    let borderStart = -1;
-    let borderEnd = -1;
+    // First, try to find encoded colors (more precise)
+    let encodedStart = -1;
+    let encodedEnd = -1;
 
     for (let x = 0; x < width; x++) {
       const pixel = getPixel(x, y);
-      if (isBorderColor(pixel)) {
-        if (borderStart === -1) borderStart = x;
-        borderEnd = x;
+      if (isEncodedColor(pixel)) {
+        if (encodedStart === -1) encodedStart = x;
+        encodedEnd = x;
+      }
+    }
+
+    // Fallback to gray detection if encoded colors not found
+    if (encodedEnd - encodedStart < TOTAL_SEGMENTS) {
+      encodedStart = -1;
+      encodedEnd = -1;
+      for (let x = 0; x < width; x++) {
+        const pixel = getPixel(x, y);
+        if (isBorderColorGray(pixel)) {
+          if (encodedStart === -1) encodedStart = x;
+          encodedEnd = x;
+        }
       }
     }
 
     // Need sufficient width for all segments
-    const borderWidth = borderEnd - borderStart + 1;
+    const borderWidth = encodedEnd - encodedStart + 1;
     if (borderWidth < TOTAL_SEGMENTS) {
       continue;
     }
@@ -65,17 +94,17 @@ async function decodeUuidFromImage(
     // Try different widths and offsets
     const possibleWidths = [
       borderWidth,
+      Math.floor(borderWidth * 0.99),
       Math.floor(borderWidth * 0.98),
       Math.floor(borderWidth * 0.95),
       Math.floor(borderWidth * 0.90),
-      Math.floor(borderWidth * 0.85),
     ].filter((w) => w >= TOTAL_SEGMENTS);
 
-    const possibleOffsets = [0, 1, 2, 3, 5, 8, 10, 15, 20];
+    const possibleOffsets = [0, 1, 2, 3, 4, 5, 6, 8, 10, 12, 15];
 
     for (const encodedWidth of possibleWidths) {
       for (const offset of possibleOffsets) {
-        const startX = borderStart + offset;
+        const startX = encodedStart + offset;
         if (startX + encodedWidth > width) continue;
 
         const result = decodeFromPixelRow(
@@ -287,6 +316,13 @@ test.describe('UUID Border Robustness - Reliable Mutations', () => {
 /**
  * Tests for lossy compression that may or may not work
  * These test the limits of the encoding and document expected behavior
+ * 
+ * NOTE: JPEG compression uses 8x8 DCT blocks which average colors.
+ * When color segments are only ~3 pixels wide (496px / 148 segments),
+ * adjacent segments bleed into each other, destroying the color encoding.
+ * 
+ * For JPEG robustness, segments should be at least 8 pixels wide,
+ * requiring a minimum width of 148 * 8 = 1184 pixels.
  */
 test.describe('UUID Border Robustness - Lossy Compression', () => {
   let originalUuid: string;
@@ -311,12 +347,11 @@ test.describe('UUID Border Robustness - Lossy Compression', () => {
     await page.close();
   });
 
-  // Note: JPEG compression typically destroys the color calibration
-  // because it smudges the 8 index colors together, reducing their
-  // per-channel variance below the 10-unit detection threshold.
-  // These tests document this limitation.
+  // Note: With ~3px segments (496px width), JPEG destroys color calibration
+  // by averaging colors from adjacent segments in its 8x8 DCT blocks.
+  // These tests document this expected limitation.
 
-  test('JPEG Q95 - very high quality, may preserve colors', async () => {
+  test('JPEG Q95 - narrow image (~3px segments), expected to fail', async () => {
     const jpegBuffer = await sharp(originalScreenshot)
       .jpeg({ quality: 95 })
       .toBuffer();
@@ -325,16 +360,16 @@ test.describe('UUID Border Robustness - Lossy Compression', () => {
 
     const result = await decodeUuidFromImage(jpegBuffer, 'jpeg-q95');
 
-    // At Q95, there's a chance it works
     if (result.uuid) {
       expect(result.uuid).toBe(originalUuid);
-      console.log('JPEG Q95: Decoded successfully');
+      console.log('JPEG Q95: Decoded successfully (unexpected!)');
     } else {
-      console.log('JPEG Q95: Failed to decode (color calibration lost)');
+      // Expected: segments too narrow for JPEG
+      console.log('JPEG Q95: Failed (expected - ~3px segments < 8px JPEG block)');
     }
   });
 
-  test('JPEG Q90 - high quality, color smudging likely', async () => {
+  test('JPEG Q90 - narrow image, expected to fail', async () => {
     const jpegBuffer = await sharp(originalScreenshot)
       .jpeg({ quality: 90 })
       .toBuffer();
@@ -343,16 +378,15 @@ test.describe('UUID Border Robustness - Lossy Compression', () => {
 
     const result = await decodeUuidFromImage(jpegBuffer, 'jpeg-q90');
 
-    // Document the result but don't fail - this is expected to be unreliable
     if (result.uuid) {
       expect(result.uuid).toBe(originalUuid);
-      console.log('JPEG Q90: Decoded successfully');
+      console.log('JPEG Q90: Decoded successfully (unexpected!)');
     } else {
-      console.log('JPEG Q90: Failed to decode (expected - color calibration lost)');
+      console.log('JPEG Q90: Failed (expected - segments too narrow)');
     }
   });
 
-  test('JPEG Q70 - medium quality', async () => {
+  test('JPEG Q70 - narrow image, expected to fail', async () => {
     const jpegBuffer = await sharp(originalScreenshot)
       .jpeg({ quality: 70 })
       .toBuffer();
@@ -363,13 +397,13 @@ test.describe('UUID Border Robustness - Lossy Compression', () => {
 
     if (result.uuid) {
       expect(result.uuid).toBe(originalUuid);
-      console.log('JPEG Q70: Decoded successfully');
+      console.log('JPEG Q70: Decoded successfully (unexpected!)');
     } else {
-      console.log('JPEG Q70: Failed to decode (expected - color calibration lost)');
+      console.log('JPEG Q70: Failed (expected - segments too narrow)');
     }
   });
 
-  test('WebP lossy - similar to JPEG', async () => {
+  test('WebP lossy - similar limitations to JPEG', async () => {
     const webpBuffer = await sharp(originalScreenshot)
       .webp({ quality: 80 })
       .toBuffer();
@@ -382,7 +416,7 @@ test.describe('UUID Border Robustness - Lossy Compression', () => {
       expect(result.uuid).toBe(originalUuid);
       console.log('WebP Q80: Decoded successfully');
     } else {
-      console.log('WebP Q80: Failed to decode (expected - color calibration lost)');
+      console.log('WebP Q80: Failed (expected - similar to JPEG)');
     }
   });
 
@@ -416,6 +450,7 @@ test.describe('UUID Border Robustness - Lossy Compression', () => {
       console.log('Resize cycle: Failed to decode (interpolation damage)');
     }
   });
+
 });
 
 /**
@@ -508,6 +543,57 @@ test.describe('UUID Border - Reed-Solomon Error Correction', () => {
       console.log(`Scattered damage: Decoded, errorsCorrected=${result.errorsCorrected}`);
     } else {
       console.log('Scattered damage: Too much damage in critical areas');
+    }
+  });
+});
+
+/**
+ * Test JPEG robustness with wide viewport rendering
+ * For JPEG to preserve the encoding, segments need to be at least 8px wide.
+ * With 148 segments, minimum width is ~1200px.
+ */
+test.describe('UUID Border - Wide Viewport JPEG Test', () => {
+  test('JPEG Q80 with 1200px viewport - may decode with wider segments', async ({
+    browser,
+  }) => {
+    // Create a page with wide viewport
+    const context = await browser.newContext({
+      viewport: { width: 1400, height: 200 },
+    });
+    const page = await context.newPage();
+
+    await page.goto('/');
+    await page.waitForLoadState('networkidle');
+    await page.waitForSelector('canvas');
+    await page.waitForTimeout(500);
+
+    // Get the UUID
+    const uuidElement = await page.locator('code').first();
+    const uuid = (await uuidElement.textContent()) || '';
+
+    // Take screenshot of the wider component
+    const inputContainer = await page.locator('.relative.flex-1').first();
+    const wideScreenshot = await inputContainer.screenshot({ type: 'png' });
+
+    // Save original wide screenshot
+    writeFileSync(join(ARTIFACTS_DIR, '20-wide-original.png'), wideScreenshot);
+
+    // Convert to JPEG Q80
+    const jpegBuffer = await sharp(wideScreenshot).jpeg({ quality: 80 }).toBuffer();
+    writeFileSync(join(ARTIFACTS_DIR, '21-wide-jpeg-q80.jpg'), jpegBuffer);
+
+    // Try to decode
+    const result = await decodeUuidFromImage(jpegBuffer, 'wide-jpeg-q80');
+
+    await page.close();
+    await context.close();
+
+    if (result.uuid) {
+      expect(result.uuid).toBe(uuid);
+      console.log('Wide viewport JPEG Q80: Decoded successfully ✓');
+    } else {
+      // May fail if component doesn't stretch to full viewport width
+      console.log('Wide viewport JPEG Q80: Failed (may need component CSS changes)');
     }
   });
 });
